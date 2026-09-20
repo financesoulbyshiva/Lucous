@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="15" fill="#1a73e8"/>
+  <text x="32" y="41" font-family="Poppins, Arial, Helvetica, sans-serif" font-size="34" font-weight="800" fill="#ffffff" text-anchor="middle">L</text>
+  <circle cx="17" cy="53" r="3.4" fill="#e94235"/>
+  <circle cx="26.5" cy="53" r="3.4" fill="#f4b400"/>
+  <circle cx="36" cy="53" r="3.4" fill="#23a455"/>
+  <circle cx="45.5" cy="53" r="3.4" fill="#ffffff"/>
+</svg>
