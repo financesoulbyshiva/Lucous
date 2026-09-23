@@ -21,6 +21,26 @@ import {
 } from "@/lib/auth";
 import { useSession } from "@/lib/use-session";
 
+function getStoredUser(): { name?: string; email?: string } | null {
+  if (typeof window === "undefined") return null;
+  const raw =
+    window.localStorage.getItem("lucous_user") ??
+    window.sessionStorage.getItem("lucous_user");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as { name?: string; email?: string };
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredAuth() {
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    storage.removeItem("lucous_token");
+    storage.removeItem("lucous_user");
+  }
+}
+
 export function RoleGate({ role }: { role: AuthRole }) {
   const router = useRouter();
   const config = ROLE_CONFIG[role];
@@ -44,6 +64,8 @@ export function RoleGate({ role }: { role: AuthRole }) {
     );
   }
 
+  const user = getStoredUser();
+
   return (
     <main className="flex min-h-dvh flex-col items-center bg-background px-4 py-10 sm:py-14">
       <Link
@@ -59,7 +81,8 @@ export function RoleGate({ role }: { role: AuthRole }) {
           <CardHeader>
             <CardTitle className="text-lg">{config.label} dashboard</CardTitle>
             <CardDescription>
-              Signed in as {session.email} · {config.tagline}
+              Signed in as {user?.name ?? session.name ?? session.email}
+              {user?.email ? ` (${user.email})` : ""} · {config.tagline}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -71,8 +94,9 @@ export function RoleGate({ role }: { role: AuthRole }) {
               variant="outline"
               className="mt-4 h-9 w-full text-sm"
               onClick={() => {
+                clearStoredAuth();
                 clearSession();
-                router.replace("/auth");
+                router.replace(`/auth/${role}/login`);
               }}
             >
               <LogOut aria-hidden />

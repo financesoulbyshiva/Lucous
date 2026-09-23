@@ -41,3 +41,8 @@ yarn-error.log*
 next-env.d.ts
 
 .vercel
+backend/node_modules/
+backend/.agents/
+backend/.claude/
+backend/.cursor/
+backend/.devin/
