@@ -7,6 +7,8 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ----------------------------- Auth (unchanged) ----------------------------
+
 model User {
   id        Int      @id @default(autoincrement())
   name      String
@@ -15,6 +17,11 @@ model User {
   role      Role
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  attempts  Attempt[]
+  progress  StudentProgress[]
+  materials UploadedMaterial[]
+  authoredContent LearningContent[] @relation("ContentAuthor")
 }
 
 enum Role {
@@ -22,4 +29,181 @@ enum Role {
   PARENT
   TEACHER
   ADMIN
+}
+
+// ------------------- Scalable education structure (data) --------------------
+// Board -> Grade (Class) -> Subject -> Chapter -> Topic -> Content/Question.
+// Adding a board/class/subject later is a data insert, not a code change.
+
+model Board {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique
+  subjects Subject[]
+}
+
+model Grade {
+  id       Int       @id @default(autoincrement())
+  name     String    @unique
+  subjects Subject[]
+}
+
+model Subject {
+  id        Int                @id @default(autoincrement())
+  name      String
+  boardId   Int
+  gradeId   Int
+  board     Board              @relation(fields: [boardId], references: [id])
+  grade     Grade              @relation(fields: [gradeId], references: [id])
+  chapters  Chapter[]
+  materials UploadedMaterial[]
+
+  @@unique([boardId, gradeId, name])
+}
+
+model Chapter {
+  id        Int                @id @default(autoincrement())
+  subjectId Int
+  subject   Subject            @relation(fields: [subjectId], references: [id])
+  name      String
+  topics    Topic[]
+  materials UploadedMaterial[]
+
+  @@unique([subjectId, name])
+}
+
+model Topic {
+  id          Int                @id @default(autoincrement())
+  chapterId   Int
+  chapter     Chapter            @relation(fields: [chapterId], references: [id])
+  name        String
+  contents    LearningContent[]
+  questions   Question[]
+  attempts    Attempt[]
+  materials   UploadedMaterial[]
+
+  @@unique([chapterId, name])
+}
+
+// ------------------------- Content + AI pipeline fields ---------------------
+// source: who/what produced it. status: approval/publishing workflow, so
+// AI-generated content is never auto-published to students.
+
+enum ContentSource {
+  TEACHER
+  UPLOADED
+  AI
+}
+
+enum ContentStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model LearningContent {
+  id         Int             @id @default(autoincrement())
+  topicId    Int
+  topic      Topic           @relation(fields: [topicId], references: [id])
+  title      String
+  body       String
+  order      Int             @default(0)
+  source     ContentSource   @default(TEACHER)
+  status     ContentStatus   @default(PUBLISHED)
+  authorId   Int?
+  author     User?           @relation("ContentAuthor", fields: [authorId], references: [id])
+  materialId Int?
+  material   UploadedMaterial? @relation(fields: [materialId], references: [id])
+  progress   StudentProgress[]
+}
+
+model Question {
+  id          Int               @id @default(autoincrement())
+  topicId     Int
+  topic       Topic             @relation(fields: [topicId], references: [id])
+  text        String
+  optionA     String
+  optionB     String
+  optionC     String
+  optionD     String
+  correct     Int
+  explanation String?
+  difficulty  Difficulty        @default(MEDIUM)
+  source      ContentSource     @default(TEACHER)
+  status      ContentStatus     @default(PUBLISHED)
+  materialId  Int?
+  material    UploadedMaterial? @relation(fields: [materialId], references: [id])
+}
+
+// -------------------- Teacher upload / AI pipeline foundation ---------------
+
+enum MaterialStatus {
+  UPLOADED
+  PROCESSING
+  ANALYZED
+  READY
+  FAILED
+}
+
+model UploadedMaterial {
+  id           Int            @id @default(autoincrement())
+  teacherId    Int
+  teacher      User           @relation(fields: [teacherId], references: [id])
+  originalName String
+  fileType     String
+  fileSize     Int
+  boardId      Int?
+  gradeId      Int?
+  subjectId    Int?
+  chapterId    Int?
+  topicId      Int?
+  subject      Subject?       @relation(fields: [subjectId], references: [id])
+  chapter      Chapter?       @relation(fields: [chapterId], references: [id])
+  topic        Topic?         @relation(fields: [topicId], references: [id])
+  status       MaterialStatus @default(UPLOADED)
+  createdAt    DateTime       @default(now())
+  contents     LearningContent[]
+  questions    Question[]
+
+  @@index([teacherId])
+}
+
+// --------------------------- Attempts + progress ----------------------------
+
+enum AttemptMode {
+  PLAY
+  PRACTICE
+  TEST
+  RETEST
+}
+
+model Attempt {
+  id        Int         @id @default(autoincrement())
+  userId    Int
+  user      User        @relation(fields: [userId], references: [id])
+  topicId   Int
+  topic     Topic       @relation(fields: [topicId], references: [id])
+  mode      AttemptMode
+  correct   Int
+  total     Int
+  score     Float
+  createdAt DateTime    @default(now())
+
+  @@index([userId])
+}
+
+model StudentProgress {
+  id          Int             @id @default(autoincrement())
+  userId      Int
+  user        User            @relation(fields: [userId], references: [id])
+  contentId   Int
+  content     LearningContent @relation(fields: [contentId], references: [id])
+  completedAt DateTime        @default(now())
+
+  @@unique([userId, contentId])
 }

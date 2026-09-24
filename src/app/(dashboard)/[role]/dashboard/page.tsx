@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { RoleGate } from "@/components/auth/role-gate";
+import { StudentHome } from "@/components/student/student-home";
 import { AUTH_ROLES, ROLE_CONFIG, isAuthRole } from "@/lib/auth";
 
 export function generateStaticParams() {
@@ -26,6 +27,8 @@ export default async function DashboardPage({
 }) {
   const { role } = await params;
   if (!isAuthRole(role)) notFound();
+
+  if (role === "student") return <StudentHome />;
 
   return <RoleGate role={role} />;
 }
