@@ -3,7 +3,15 @@
 import * as React from "react";
 import Link from "next/link";
 import { cn } from "cn";
-import { BookOpen, Gamepad2, PenLine, ClipboardList } from "lucide-react";
+import {
+  BookOpen,
+  Gamepad2,
+  PenLine,
+  ClipboardList,
+  GraduationCap,
+  Sparkles,
+  User,
+} from "lucide-react";
 import {
   Card,
   CardContent,
@@ -35,6 +43,10 @@ const QUICK_ACTIONS = [
   { href: "/student/play", label: "Play", icon: Gamepad2, hint: "Quick quiz game" },
   { href: "/student/practice", label: "Practice", icon: PenLine, hint: "Topic practice" },
   { href: "/student/test", label: "Test", icon: ClipboardList, hint: "Topic test" },
+  { href: "/student/courses", label: "Courses", icon: GraduationCap, hint: "Browse & enroll" },
+  { href: "/student/games", label: "Games", icon: Gamepad2, hint: "Earn XP & compete" },
+  { href: "/student/tutor", label: "AI Tutor", icon: Sparkles, hint: "Ask anything" },
+  { href: "/student/profile", label: "Profile", icon: User, hint: "Your account" },
 ] as const;
 
 export function StudentHome() {

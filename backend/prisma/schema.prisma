@@ -18,6 +18,14 @@ model User {
   password   String
   role       String   @default("STUDENT") // STUDENT | PARENT | TEACHER | ADMIN
   isVerified Boolean  @default(false)
+  // Optional profile fields captured at signup / editable on the profile page.
+  phone      String?
+  grade      String?
+  board      String?
+  school     String?
+  subject    String?
+  avatarUrl  String?
+  xp         Int      @default(0) // accumulated game XP (leaderboard)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -28,6 +36,11 @@ model User {
   courses         Course[]
   enrollments     Enrollment[]
   otps            Otp[]
+  gameScores      GameScore[]
+  payments        Payment[]
+  aiMessages      AiMessage[]
+  children        ParentChild[]     @relation("ParentChildren")
+  parentLinks     ParentChild[]     @relation("StudentParent")
 }
 
 model Otp {
@@ -92,6 +105,7 @@ model Topic {
   questions Question[]
   attempts  Attempt[]
   materials UploadedMaterial[]
+  gameScores GameScore[]
 
   @@unique([chapterId, name])
 }
@@ -193,10 +207,13 @@ model Course {
   description String
   subject     String
   board       String
+  price       Int          @default(0) // in paise; 0 = free course
+  currency    String       @default("INR")
   teacherId   String       @db.ObjectId
   teacher     User         @relation(fields: [teacherId], references: [id])
   createdAt   DateTime     @default(now())
   enrollments Enrollment[]
+  payments    Payment[]
 
   @@index([teacherId])
 }
@@ -216,4 +233,79 @@ model Enrollment {
   @@unique([courseId, studentId])
   @@index([studentId])
   @@index([teacherId])
+}
+
+// ------------------------------ Payments ------------------------------------
+// Razorpay orders/payments. amount is stored in paise. The secret never leaves
+// the backend; only the public key id is exposed via /api/payments/config.
+
+model Payment {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String   @db.ObjectId
+  user              User     @relation(fields: [userId], references: [id])
+  courseId          String?  @db.ObjectId
+  course            Course?  @relation(fields: [courseId], references: [id])
+  amount            Int // paise
+  currency          String   @default("INR")
+  status            String   @default("CREATED") // CREATED | PAID | FAILED
+  razorpayOrderId   String   @unique
+  razorpayPaymentId String?
+  razorpaySignature String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ------------------------------- Games --------------------------------------
+// A game session is scored server-side; XP is awarded and stored for the
+// leaderboard. gameId is presentational (which game mode was played).
+
+model GameScore {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id])
+  gameId    String
+  topicId   String?  @db.ObjectId
+  topic     Topic?   @relation(fields: [topicId], references: [id])
+  correct   Int
+  total     Int
+  score     Float
+  xp        Int
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([gameId])
+}
+
+// ------------------------------ AI Tutor ------------------------------------
+// Conversation log for the AI tutor. content is the message text; role is
+// "user" | "assistant" | "system".
+
+model AiMessage {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String   @db.ObjectId
+  user           User     @relation(fields: [userId], references: [id])
+  conversationId String
+  role           String // user | assistant | system
+  content        String
+  createdAt      DateTime @default(now())
+
+  @@index([userId])
+  @@index([conversationId])
+}
+
+// --------------------------- Parent <-> Child -------------------------------
+// A parent may only view data for students linked here.
+
+model ParentChild {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  parentId  String   @db.ObjectId
+  parent    User     @relation("ParentChildren", fields: [parentId], references: [id])
+  studentId String   @db.ObjectId
+  student   User     @relation("StudentParent", fields: [studentId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([parentId, studentId])
+  @@index([studentId])
 }

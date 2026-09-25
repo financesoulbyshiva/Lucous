@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { RoleGate } from "@/components/auth/role-gate";
 import { StudentHome } from "@/components/student/student-home";
+import { TeacherHome } from "@/components/teacher/teacher-home";
+import { ParentHome } from "@/components/parent/parent-home";
+import { AdminHome } from "@/components/admin/admin-home";
 import { AUTH_ROLES, ROLE_CONFIG, isAuthRole } from "@/lib/auth";
 
 export function generateStaticParams() {
@@ -29,6 +31,7 @@ export default async function DashboardPage({
   if (!isAuthRole(role)) notFound();
 
   if (role === "student") return <StudentHome />;
-
-  return <RoleGate role={role} />;
+  if (role === "teacher") return <TeacherHome />;
+  if (role === "parent") return <ParentHome />;
+  return <AdminHome />;
 }

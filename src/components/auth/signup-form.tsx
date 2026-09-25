@@ -50,6 +50,11 @@ export function SignupForm({ role }: { role: AuthRole }) {
     const email = String(fd.get("email") ?? "").trim();
     const name = String(fd.get("fullName") ?? fd.get("parentName") ?? "").trim();
 
+    const optional = (key: string) => {
+      const v = String(fd.get(key) ?? "").trim();
+      return v ? v : undefined;
+    };
+
     const path = REGISTER_PATH[role];
     if (!path) {
       setError("Signup is not available for this role.");
@@ -61,7 +66,16 @@ export function SignupForm({ role }: { role: AuthRole }) {
       const response = await fetch(`${API_URL}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({
+          name,
+          email,
+          password,
+          phone: optional("mobile"),
+          grade: optional("grade"),
+          board: optional("board"),
+          school: optional("school"),
+          subject: optional("subject"),
+        }),
       });
       const data = await response.json();
 
