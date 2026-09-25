@@ -69,7 +69,7 @@ export function StudentQuizPage({
   presetTopicId,
 }: {
   mode: QuizMode;
-  presetTopicId?: number | null;
+  presetTopicId?: string | number | null;
 }) {
   const config = MODE_CONFIG[mode];
   const [topic, setTopic] = React.useState<Topic | null>(null);
@@ -114,7 +114,7 @@ function QuizRunner({
   limit,
 }: {
   mode: QuizMode;
-  topicId: number;
+  topicId: string | number;
   limit: number;
 }) {
   const router = useRouter();

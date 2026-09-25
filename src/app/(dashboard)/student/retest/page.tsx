@@ -12,8 +12,8 @@ export default async function StudentRetestPage({
 }) {
   const { topicId, mode } = await searchParams;
 
-  const parsed = topicId ? Number(topicId) : NaN;
-  const presetTopicId = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  // Topic ids are MongoDB ObjectIds (opaque strings) — pass through as-is.
+  const presetTopicId = topicId && topicId.trim() ? topicId : null;
   const quizMode = mode === "PRACTICE" ? "PRACTICE" : "RETEST";
 
   return <StudentQuizPage mode={quizMode} presetTopicId={presetTopicId} />;

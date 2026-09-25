@@ -28,7 +28,7 @@ app.use(express.json());
 // Health check
 app.get("/api/health", async (req, res) => {
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await prisma.$runCommandRaw({ ping: 1 });
 
     res.json({
       success: true,
@@ -45,10 +45,13 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Register
-app.post("/api/auth/register", async (req, res) => {
+// Register (shared handler; role-specific routes force the role)
+const VALID_ROLES = ["STUDENT", "PARENT", "TEACHER", "ADMIN"];
+
+async function registerUser(req, res, forcedRole) {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password } = req.body;
+    const role = forcedRole || req.body.role;
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({
@@ -57,9 +60,7 @@ app.post("/api/auth/register", async (req, res) => {
       });
     }
 
-    const validRoles = ["STUDENT", "PARENT", "TEACHER", "ADMIN"];
-
-    if (!validRoles.includes(role)) {
+    if (!VALID_ROLES.includes(role)) {
       return res.status(400).json({
         success: false,
         message: "Invalid role",
@@ -106,7 +107,12 @@ app.post("/api/auth/register", async (req, res) => {
       message: "Registration failed",
     });
   }
-});
+}
+
+app.post("/api/auth/register", (req, res) => registerUser(req, res, null));
+app.post("/api/auth/register/student", (req, res) => registerUser(req, res, "STUDENT"));
+app.post("/api/auth/register/teacher", (req, res) => registerUser(req, res, "TEACHER"));
+app.post("/api/auth/register/parent", (req, res) => registerUser(req, res, "PARENT"));
 
 // Login
 app.post("/api/auth/login", async (req, res) => {
@@ -170,6 +176,211 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// Current user
+app.get("/api/auth/me", authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isVerified: user.isVerified,
+      },
+    });
+  } catch (error) {
+    console.error("Me error:", error);
+    res.status(500).json({ success: false, message: "Failed to load user" });
+  }
+});
+
+// Logout (JWT is stateless; no blacklist needed)
+app.post("/api/auth/logout", (req, res) => {
+  res.json({ success: true, message: "Logged out" });
+});
+
+// ------------------------------- OTP ----------------------------------------
+// Development-safe: no SMTP configured, so the OTP is logged to the console and
+// returned in the response ONLY when NODE_ENV is not "production".
+
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function isDev() {
+  return (process.env.NODE_ENV || "development") !== "production";
+}
+
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function issueOtp(email, purpose, userId) {
+  const code = generateOtpCode();
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
+
+  // Invalidate any previous unused OTPs for this email + purpose.
+  await prisma.otp.deleteMany({
+    where: { email, purpose, verified: false },
+  });
+
+  await prisma.otp.create({
+    data: { email, code, purpose, expiresAt, userId: userId ?? null },
+  });
+
+  console.log(`[OTP] ${purpose} code for ${email}: ${code} (expires ${expiresAt.toISOString()})`);
+  return code;
+}
+
+app.post("/api/auth/send-otp", async (req, res) => {
+  try {
+    const { email, purpose } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+
+    const otpPurpose = purpose === "RESET" ? "RESET" : "VERIFY";
+    const user = await prisma.user.findUnique({ where: { email } });
+    const code = await issueOtp(email, otpPurpose, user ? user.id : null);
+
+    res.json({
+      success: true,
+      message: "OTP sent",
+      ...(isDev() ? { otp: code } : {}),
+    });
+  } catch (error) {
+    console.error("Send OTP error:", error);
+    res.status(500).json({ success: false, message: "Failed to send OTP" });
+  }
+});
+
+app.post("/api/auth/verify-otp", async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and code are required" });
+    }
+
+    const otp = await prisma.otp.findFirst({
+      where: {
+        email,
+        code: String(code),
+        purpose: "VERIFY",
+        verified: false,
+        expiresAt: { gte: new Date() },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!otp) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP" });
+    }
+
+    await prisma.otp.update({ where: { id: otp.id }, data: { verified: true } });
+
+    if (otp.userId) {
+      await prisma.user.update({
+        where: { id: otp.userId },
+        data: { isVerified: true },
+      });
+    }
+
+    res.json({ success: true, message: "OTP verified" });
+  } catch (error) {
+    console.error("Verify OTP error:", error);
+    res.status(500).json({ success: false, message: "Failed to verify OTP" });
+  }
+});
+
+// --------------------------- Password reset ---------------------------------
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    const generic = {
+      success: true,
+      message: "If an account exists for that email, an OTP has been sent",
+    };
+
+    if (!user) {
+      // Do not reveal whether the email exists.
+      return res.json(generic);
+    }
+
+    const code = await issueOtp(email, "RESET", user.id);
+    res.json({ ...generic, ...(isDev() ? { otp: code } : {}) });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({ success: false, message: "Failed to process request" });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Email, code and newPassword are required",
+      });
+    }
+
+    const otp = await prisma.otp.findFirst({
+      where: {
+        email,
+        code: String(code),
+        purpose: "RESET",
+        verified: false,
+        expiresAt: { gte: new Date() },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    if (!otp || !user) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    // Invalidate the OTP after a successful reset.
+    await prisma.otp.update({ where: { id: otp.id }, data: { verified: true } });
+
+    res.json({ success: true, message: "Password reset successful" });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    res.status(500).json({ success: false, message: "Failed to reset password" });
+  }
+});
+
 // ----------------------------- Auth guards --------------------------------
 
 function verifyRole(req, res, next, expectedRole) {
@@ -208,6 +419,40 @@ function requireTeacher(req, res, next) {
   return verifyRole(req, res, next, "TEACHER");
 }
 
+// General JWT auth: verifies the Bearer token and attaches userId + role.
+function authenticate(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+
+  if (!token) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Not authenticated" });
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.userId = payload.userId;
+    req.role = payload.role;
+    next();
+  } catch (error) {
+    return res
+      .status(401)
+      .json({ success: false, message: "Invalid or expired token" });
+  }
+}
+
+// Role gate built on authenticate.
+function requireRole(...roles) {
+  return (req, res, next) =>
+    authenticate(req, res, () => {
+      if (!roles.includes(req.role)) {
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      }
+      next();
+    });
+}
+
 // ------------------------- Student MVP endpoints --------------------------
 // Data-driven: Board -> Grade (Class) -> Subject -> Chapter -> Topic.
 // Nothing here is hardcoded to a specific board/class/subject.
@@ -226,7 +471,7 @@ app.get("/api/student/boards", requireStudent, async (req, res) => {
 
 app.get("/api/student/classes", requireStudent, async (req, res) => {
   try {
-    const boardId = Number(req.query.boardId);
+    const boardId = req.query.boardId;
     const where = boardId ? { subjects: { some: { boardId } } } : {};
     const classes = await prisma.grade.findMany({
       where,
@@ -241,8 +486,8 @@ app.get("/api/student/classes", requireStudent, async (req, res) => {
 
 app.get("/api/student/subjects", requireStudent, async (req, res) => {
   try {
-    const boardId = Number(req.query.boardId);
-    const gradeId = Number(req.query.gradeId);
+    const boardId = req.query.boardId;
+    const gradeId = req.query.gradeId;
     const where = {};
     if (boardId) where.boardId = boardId;
     if (gradeId) where.gradeId = gradeId;
@@ -265,7 +510,7 @@ app.get("/api/student/subjects", requireStudent, async (req, res) => {
 
 app.get("/api/student/chapters", requireStudent, async (req, res) => {
   try {
-    const subjectId = Number(req.query.subjectId);
+    const subjectId = req.query.subjectId;
     if (!subjectId) {
       return res
         .status(400)
@@ -285,7 +530,7 @@ app.get("/api/student/chapters", requireStudent, async (req, res) => {
 
 app.get("/api/student/topics", requireStudent, async (req, res) => {
   try {
-    const chapterId = Number(req.query.chapterId);
+    const chapterId = req.query.chapterId;
     if (!chapterId) {
       return res
         .status(400)
@@ -305,7 +550,7 @@ app.get("/api/student/topics", requireStudent, async (req, res) => {
 
 app.get("/api/student/content", requireStudent, async (req, res) => {
   try {
-    const topicId = Number(req.query.topicId);
+    const topicId = req.query.topicId;
     if (!topicId) {
       return res
         .status(400)
@@ -339,7 +584,7 @@ app.get("/api/student/content", requireStudent, async (req, res) => {
 
 app.get("/api/student/questions", requireStudent, async (req, res) => {
   try {
-    const topicId = Number(req.query.topicId);
+    const topicId = req.query.topicId;
     const limit = Math.min(Number(req.query.limit) || 10, 30);
     if (!topicId) {
       return res
@@ -373,7 +618,7 @@ app.post("/api/student/check", requireStudent, async (req, res) => {
   try {
     const { questionId, selected } = req.body;
     const question = await prisma.question.findUnique({
-      where: { id: Number(questionId) },
+      where: { id: String(questionId) },
     });
     if (!question) {
       return res
@@ -410,8 +655,8 @@ app.post("/api/student/attempts", requireStudent, async (req, res) => {
 
     const questions = await prisma.question.findMany({
       where: {
-        topicId: Number(topicId),
-        id: { in: answers.map((a) => Number(a.questionId)) },
+        topicId: String(topicId),
+        id: { in: answers.map((a) => String(a.questionId)) },
       },
     });
 
@@ -419,13 +664,13 @@ app.post("/api/student/attempts", requireStudent, async (req, res) => {
     let correctCount = 0;
 
     const perQuestion = answers.map((a) => {
-      const question = byId.get(Number(a.questionId));
+      const question = byId.get(String(a.questionId));
       const correctIndex = question ? question.correct : null;
       const wasCorrect =
         question !== undefined && Number(a.selected) === question.correct;
       if (wasCorrect) correctCount += 1;
       return {
-        questionId: Number(a.questionId),
+        questionId: String(a.questionId),
         selected: Number(a.selected),
         correctIndex,
         wasCorrect,
@@ -439,7 +684,7 @@ app.post("/api/student/attempts", requireStudent, async (req, res) => {
     const attempt = await prisma.attempt.create({
       data: {
         userId: req.userId,
-        topicId: Number(topicId),
+        topicId: String(topicId),
         mode,
         correct: correctCount,
         total,
@@ -525,7 +770,7 @@ app.post("/api/student/progress", requireStudent, async (req, res) => {
   try {
     const { contentId } = req.body;
     const content = await prisma.learningContent.findUnique({
-      where: { id: Number(contentId) },
+      where: { id: String(contentId) },
     });
     if (!content) {
       return res
@@ -534,10 +779,10 @@ app.post("/api/student/progress", requireStudent, async (req, res) => {
     }
     await prisma.studentProgress.upsert({
       where: {
-        userId_contentId: { userId: req.userId, contentId: Number(contentId) },
+        userId_contentId: { userId: req.userId, contentId: String(contentId) },
       },
       update: {},
-      create: { userId: req.userId, contentId: Number(contentId) },
+      create: { userId: req.userId, contentId: String(contentId) },
     });
     res.json({ success: true, message: "Progress saved" });
   } catch (error) {
@@ -613,11 +858,11 @@ app.post("/api/teacher/materials", requireTeacher, async (req, res) => {
         originalName,
         fileType,
         fileSize: Number(fileSize),
-        boardId: boardId ? Number(boardId) : null,
-        gradeId: gradeId ? Number(gradeId) : null,
-        subjectId: subjectId ? Number(subjectId) : null,
-        chapterId: chapterId ? Number(chapterId) : null,
-        topicId: topicId ? Number(topicId) : null,
+        boardId: boardId || null,
+        gradeId: gradeId || null,
+        subjectId: subjectId || null,
+        chapterId: chapterId || null,
+        topicId: topicId || null,
         status: MATERIAL_STATUSES.includes(status) ? status : "UPLOADED",
       },
     });
@@ -663,7 +908,7 @@ app.post("/api/teacher/content", requireTeacher, async (req, res) => {
     }
 
     const topic = await prisma.topic.findUnique({
-      where: { id: Number(topicId) },
+      where: { id: String(topicId) },
     });
     if (!topic) {
       return res
@@ -673,7 +918,7 @@ app.post("/api/teacher/content", requireTeacher, async (req, res) => {
 
     const content = await prisma.learningContent.create({
       data: {
-        topicId: Number(topicId),
+        topicId: String(topicId),
         title,
         body,
         order: order !== undefined ? Number(order) : 0,
@@ -688,6 +933,156 @@ app.post("/api/teacher/content", requireTeacher, async (req, res) => {
   } catch (error) {
     console.error("Teacher content create error:", error);
     res.status(500).json({ success: false, message: "Failed to save content" });
+  }
+});
+
+// ------------------------------- Courses ------------------------------------
+// Only an authenticated TEACHER can create a course; teacherId always comes
+// from the JWT, never the request body. Any authenticated user can view.
+
+app.post("/api/courses", requireRole("TEACHER"), async (req, res) => {
+  try {
+    const { title, description, subject, board } = req.body;
+
+    if (!title || !description || !subject || !board) {
+      return res.status(400).json({
+        success: false,
+        message: "title, description, subject and board are required",
+      });
+    }
+
+    const course = await prisma.course.create({
+      data: {
+        title,
+        description,
+        subject,
+        board,
+        teacherId: req.userId,
+      },
+    });
+
+    res.status(201).json({ success: true, course });
+  } catch (error) {
+    console.error("Course create error:", error);
+    res.status(500).json({ success: false, message: "Failed to create course" });
+  }
+});
+
+app.get("/api/courses", authenticate, async (req, res) => {
+  try {
+    const courses = await prisma.course.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        teacher: { select: { id: true, name: true } },
+        _count: { select: { enrollments: true } },
+      },
+    });
+    res.json({ success: true, courses });
+  } catch (error) {
+    console.error("Courses list error:", error);
+    res.status(500).json({ success: false, message: "Failed to load courses" });
+  }
+});
+
+app.get("/api/courses/:id", authenticate, async (req, res) => {
+  try {
+    const course = await prisma.course.findUnique({
+      where: { id: req.params.id },
+      include: {
+        teacher: { select: { id: true, name: true } },
+        _count: { select: { enrollments: true } },
+      },
+    });
+    if (!course) {
+      return res.status(404).json({ success: false, message: "Course not found" });
+    }
+    res.json({ success: true, course });
+  } catch (error) {
+    console.error("Course detail error:", error);
+    res.status(500).json({ success: false, message: "Failed to load course" });
+  }
+});
+
+// ----------------------------- Enrollment -----------------------------------
+// studentId always comes from the JWT, so a user cannot impersonate another
+// student. Duplicate enrollment is prevented by the courseId+studentId unique.
+
+app.post("/api/enrollments", requireRole("STUDENT"), async (req, res) => {
+  try {
+    const { courseId } = req.body;
+
+    if (!courseId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "courseId is required" });
+    }
+
+    const course = await prisma.course.findUnique({
+      where: { id: String(courseId) },
+    });
+    if (!course) {
+      return res.status(404).json({ success: false, message: "Course not found" });
+    }
+
+    const existing = await prisma.enrollment.findUnique({
+      where: {
+        courseId_studentId: { courseId: String(courseId), studentId: req.userId },
+      },
+    });
+    if (existing) {
+      return res
+        .status(409)
+        .json({ success: false, message: "Already enrolled in this course" });
+    }
+
+    const enrollment = await prisma.enrollment.create({
+      data: {
+        courseId: String(courseId),
+        studentId: req.userId,
+        teacherId: course.teacherId,
+        status: "ENROLLED",
+      },
+    });
+
+    res.status(201).json({ success: true, enrollment });
+  } catch (error) {
+    console.error("Enrollment error:", error);
+    res.status(500).json({ success: false, message: "Failed to enroll" });
+  }
+});
+
+app.get("/api/enrollments/my", requireRole("STUDENT"), async (req, res) => {
+  try {
+    const enrollments = await prisma.enrollment.findMany({
+      where: { studentId: req.userId },
+      orderBy: { createdAt: "desc" },
+      include: {
+        course: {
+          include: { teacher: { select: { id: true, name: true } } },
+        },
+      },
+    });
+    res.json({ success: true, enrollments });
+  } catch (error) {
+    console.error("My enrollments error:", error);
+    res.status(500).json({ success: false, message: "Failed to load enrollments" });
+  }
+});
+
+app.get("/api/teacher/enrollments", requireRole("TEACHER"), async (req, res) => {
+  try {
+    const enrollments = await prisma.enrollment.findMany({
+      where: { teacherId: req.userId },
+      orderBy: { createdAt: "desc" },
+      include: {
+        student: { select: { id: true, name: true, email: true } },
+        course: { select: { id: true, title: true, subject: true, board: true } },
+      },
+    });
+    res.json({ success: true, enrollments });
+  } catch (error) {
+    console.error("Teacher enrollments error:", error);
+    res.status(500).json({ success: false, message: "Failed to load enrollments" });
   }
 });
 

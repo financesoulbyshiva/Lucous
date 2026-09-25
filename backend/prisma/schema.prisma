@@ -3,55 +3,67 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider = "mongodb"
+  url      = env("MONGODB_URI")
 }
 
-// ----------------------------- Auth (unchanged) ----------------------------
+// ----------------------------- Auth ----------------------------------------
+// MongoDB connector has no native enums, so role/status/mode/difficulty are
+// stored as strings and validated in the application layer (server.js).
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  email     String   @unique
-  password  String
-  role      Role
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  name       String
+  email      String   @unique
+  password   String
+  role       String   @default("STUDENT") // STUDENT | PARENT | TEACHER | ADMIN
+  isVerified Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  attempts  Attempt[]
-  progress  StudentProgress[]
-  materials UploadedMaterial[]
+  attempts        Attempt[]
+  progress        StudentProgress[]
+  materials       UploadedMaterial[]
   authoredContent LearningContent[] @relation("ContentAuthor")
+  courses         Course[]
+  enrollments     Enrollment[]
+  otps            Otp[]
 }
 
-enum Role {
-  STUDENT
-  PARENT
-  TEACHER
-  ADMIN
+model Otp {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  email     String
+  code      String
+  purpose   String    @default("VERIFY") // VERIFY | RESET
+  expiresAt DateTime
+  verified  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  userId    String?   @db.ObjectId
+  user      User?     @relation(fields: [userId], references: [id])
+
+  @@index([email])
 }
 
 // ------------------- Scalable education structure (data) --------------------
 // Board -> Grade (Class) -> Subject -> Chapter -> Topic -> Content/Question.
-// Adding a board/class/subject later is a data insert, not a code change.
 
 model Board {
-  id       Int       @id @default(autoincrement())
+  id       String    @id @default(auto()) @map("_id") @db.ObjectId
   name     String    @unique
   subjects Subject[]
 }
 
 model Grade {
-  id       Int       @id @default(autoincrement())
+  id       String    @id @default(auto()) @map("_id") @db.ObjectId
   name     String    @unique
   subjects Subject[]
 }
 
 model Subject {
-  id        Int                @id @default(autoincrement())
+  id        String             @id @default(auto()) @map("_id") @db.ObjectId
   name      String
-  boardId   Int
-  gradeId   Int
+  boardId   String             @db.ObjectId
+  gradeId   String             @db.ObjectId
   board     Board              @relation(fields: [boardId], references: [id])
   grade     Grade              @relation(fields: [gradeId], references: [id])
   chapters  Chapter[]
@@ -61,8 +73,8 @@ model Subject {
 }
 
 model Chapter {
-  id        Int                @id @default(autoincrement())
-  subjectId Int
+  id        String             @id @default(auto()) @map("_id") @db.ObjectId
+  subjectId String             @db.ObjectId
   subject   Subject            @relation(fields: [subjectId], references: [id])
   name      String
   topics    Topic[]
@@ -72,59 +84,39 @@ model Chapter {
 }
 
 model Topic {
-  id          Int                @id @default(autoincrement())
-  chapterId   Int
-  chapter     Chapter            @relation(fields: [chapterId], references: [id])
-  name        String
-  contents    LearningContent[]
-  questions   Question[]
-  attempts    Attempt[]
-  materials   UploadedMaterial[]
+  id        String            @id @default(auto()) @map("_id") @db.ObjectId
+  chapterId String            @db.ObjectId
+  chapter   Chapter           @relation(fields: [chapterId], references: [id])
+  name      String
+  contents  LearningContent[]
+  questions Question[]
+  attempts  Attempt[]
+  materials UploadedMaterial[]
 
   @@unique([chapterId, name])
 }
 
 // ------------------------- Content + AI pipeline fields ---------------------
-// source: who/what produced it. status: approval/publishing workflow, so
-// AI-generated content is never auto-published to students.
-
-enum ContentSource {
-  TEACHER
-  UPLOADED
-  AI
-}
-
-enum ContentStatus {
-  DRAFT
-  PENDING_REVIEW
-  PUBLISHED
-}
-
-enum Difficulty {
-  EASY
-  MEDIUM
-  HARD
-}
 
 model LearningContent {
-  id         Int             @id @default(autoincrement())
-  topicId    Int
-  topic      Topic           @relation(fields: [topicId], references: [id])
+  id         String            @id @default(auto()) @map("_id") @db.ObjectId
+  topicId    String            @db.ObjectId
+  topic      Topic             @relation(fields: [topicId], references: [id])
   title      String
   body       String
-  order      Int             @default(0)
-  source     ContentSource   @default(TEACHER)
-  status     ContentStatus   @default(PUBLISHED)
-  authorId   Int?
-  author     User?           @relation("ContentAuthor", fields: [authorId], references: [id])
-  materialId Int?
+  order      Int               @default(0)
+  source     String            @default("TEACHER") // TEACHER | UPLOADED | AI
+  status     String            @default("PUBLISHED") // DRAFT | PENDING_REVIEW | PUBLISHED
+  authorId   String?           @db.ObjectId
+  author     User?             @relation("ContentAuthor", fields: [authorId], references: [id])
+  materialId String?           @db.ObjectId
   material   UploadedMaterial? @relation(fields: [materialId], references: [id])
   progress   StudentProgress[]
 }
 
 model Question {
-  id          Int               @id @default(autoincrement())
-  topicId     Int
+  id          String            @id @default(auto()) @map("_id") @db.ObjectId
+  topicId     String            @db.ObjectId
   topic       Topic             @relation(fields: [topicId], references: [id])
   text        String
   optionA     String
@@ -133,40 +125,32 @@ model Question {
   optionD     String
   correct     Int
   explanation String?
-  difficulty  Difficulty        @default(MEDIUM)
-  source      ContentSource     @default(TEACHER)
-  status      ContentStatus     @default(PUBLISHED)
-  materialId  Int?
+  difficulty  String            @default("MEDIUM") // EASY | MEDIUM | HARD
+  source      String            @default("TEACHER")
+  status      String            @default("PUBLISHED")
+  materialId  String?           @db.ObjectId
   material    UploadedMaterial? @relation(fields: [materialId], references: [id])
 }
 
 // -------------------- Teacher upload / AI pipeline foundation ---------------
 
-enum MaterialStatus {
-  UPLOADED
-  PROCESSING
-  ANALYZED
-  READY
-  FAILED
-}
-
 model UploadedMaterial {
-  id           Int            @id @default(autoincrement())
-  teacherId    Int
-  teacher      User           @relation(fields: [teacherId], references: [id])
+  id           String            @id @default(auto()) @map("_id") @db.ObjectId
+  teacherId    String            @db.ObjectId
+  teacher      User              @relation(fields: [teacherId], references: [id])
   originalName String
   fileType     String
   fileSize     Int
-  boardId      Int?
-  gradeId      Int?
-  subjectId    Int?
-  chapterId    Int?
-  topicId      Int?
-  subject      Subject?       @relation(fields: [subjectId], references: [id])
-  chapter      Chapter?       @relation(fields: [chapterId], references: [id])
-  topic        Topic?         @relation(fields: [topicId], references: [id])
-  status       MaterialStatus @default(UPLOADED)
-  createdAt    DateTime       @default(now())
+  boardId      String?           @db.ObjectId
+  gradeId      String?           @db.ObjectId
+  subjectId    String?           @db.ObjectId
+  chapterId    String?           @db.ObjectId
+  topicId      String?           @db.ObjectId
+  subject      Subject?          @relation(fields: [subjectId], references: [id])
+  chapter      Chapter?          @relation(fields: [chapterId], references: [id])
+  topic        Topic?            @relation(fields: [topicId], references: [id])
+  status       String            @default("UPLOADED") // UPLOADED | PROCESSING | ANALYZED | READY | FAILED
+  createdAt    DateTime          @default(now())
   contents     LearningContent[]
   questions    Question[]
 
@@ -175,35 +159,61 @@ model UploadedMaterial {
 
 // --------------------------- Attempts + progress ----------------------------
 
-enum AttemptMode {
-  PLAY
-  PRACTICE
-  TEST
-  RETEST
-}
-
 model Attempt {
-  id        Int         @id @default(autoincrement())
-  userId    Int
-  user      User        @relation(fields: [userId], references: [id])
-  topicId   Int
-  topic     Topic       @relation(fields: [topicId], references: [id])
-  mode      AttemptMode
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id])
+  topicId   String   @db.ObjectId
+  topic     Topic    @relation(fields: [topicId], references: [id])
+  mode      String // PLAY | PRACTICE | TEST | RETEST
   correct   Int
   total     Int
   score     Float
-  createdAt DateTime    @default(now())
+  createdAt DateTime @default(now())
 
   @@index([userId])
 }
 
 model StudentProgress {
-  id          Int             @id @default(autoincrement())
-  userId      Int
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String          @db.ObjectId
   user        User            @relation(fields: [userId], references: [id])
-  contentId   Int
+  contentId   String          @db.ObjectId
   content     LearningContent @relation(fields: [contentId], references: [id])
   completedAt DateTime        @default(now())
 
   @@unique([userId, contentId])
+}
+
+// ------------------------------ Courses -------------------------------------
+
+model Course {
+  id          String       @id @default(auto()) @map("_id") @db.ObjectId
+  title       String
+  description String
+  subject     String
+  board       String
+  teacherId   String       @db.ObjectId
+  teacher     User         @relation(fields: [teacherId], references: [id])
+  createdAt   DateTime     @default(now())
+  enrollments Enrollment[]
+
+  @@index([teacherId])
+}
+
+// ---------------------------- Enrollment ------------------------------------
+
+model Enrollment {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  courseId   String   @db.ObjectId
+  course    Course   @relation(fields: [courseId], references: [id])
+  studentId String   @db.ObjectId
+  student   User     @relation(fields: [studentId], references: [id])
+  teacherId String?  @db.ObjectId
+  status    String   @default("ENROLLED")
+  createdAt DateTime @default(now())
+
+  @@unique([courseId, studentId])
+  @@index([studentId])
+  @@index([teacherId])
 }
